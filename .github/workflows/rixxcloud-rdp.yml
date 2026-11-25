@@ -54,6 +54,24 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
 
+          # --- Performance / Anti-Lag ---
+          try { powercfg /setactive SCHEME_MIN } catch { Write-Host "powercfg skip: $_" }
+          foreach ($svc in @("SysMain","WSearch","DiagTrack")) {
+            try { Stop-Service $svc -Force -ErrorAction Stop; Set-Service $svc -StartupType Disabled; Write-Host "service off: $svc" } catch { Write-Host "skip service $svc" }
+          }
+          try {
+            $tsPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+            if (!(Test-Path $tsPol)) { New-Item -Path $tsPol -Force | Out-Null }
+            Set-ItemProperty -Path $tsPol -Name "fDisableWallpaper" -Value 1 -Type DWord
+            Set-ItemProperty -Path $tsPol -Name "fDisableFullWindowDrag" -Value 1 -Type DWord
+            Set-ItemProperty -Path $tsPol -Name "fDisableMenuAnims" -Value 1 -Type DWord
+            Set-ItemProperty -Path $tsPol -Name "fDisableThemes" -Value 1 -Type DWord
+            Set-ItemProperty -Path $tsPol -Name "fDisableCursorBlinking" -Value 1 -Type DWord
+            # 16-bit color = bandwidth jauh lebih ringan, RDP terasa lebih responsif
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "ColorDepth" -Value 3 -Type DWord
+          } catch { Write-Host "policy skip: $_" }
+          try { Set-Service -Name TermService -StartupType Manual; Start-Service -Name TermService -ErrorAction Stop; Write-Host "TermService started" } catch { Write-Host "TermService: $_" }
+
           # --- Tunnel TCP 3389 ---
           # Default: bore.pub (gratis, tanpa token/kartu). Kalau secret NGROK_AUTH_TOKEN ada, coba ngrok dulu.
           $hostport = $null
