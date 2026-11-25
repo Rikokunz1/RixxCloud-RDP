@@ -98,8 +98,20 @@ jobs:
             Write-Host "Tunnel (bore): $hostport"
           }
 
+          # --- Ubah domain tunnel jadi IP langsung (hindari error DNS 0x104 di HP) ---
+          $domainHost = $hostport
+          $displayHost = $hostport
+          try {
+            if ($hostport -like "bore.pub:*") {
+              $portPart = $hostport.Split(":")[1]
+              $ipObj = [System.Net.Dns]::GetHostAddresses("bore.pub") | Where-Object { $_.AddressFamily -eq "InterNetwork" } | Select-Object -First 1
+              if ($ipObj) { $displayHost = "$($ipObj.IPAddressToString):$portPart" }
+            }
+          } catch { Write-Host "resolve IP gagal, tetap pakai domain: $_" }
+          Write-Host "Host IP: $displayHost | Host domain: $domainHost"
+
           $expires = (Get-Date).AddHours(6).ToString("o")
-          $msg = "🚀 *RDP kamu sudah siap!*`n`n🌐 Host: ``$hostport```n👤 Username: ``$user```n🔑 Password: ``$pass```n⏱️ Max 6 jam dari sekarang`n`nConnect via Remote Desktop (mstsc / Windows App). Jangan bagikan ke siapapun!"
+          $msg = "🚀 *RDP kamu sudah siap!*`n`n🌐 Host: ``$displayHost`` (cadangan domain: ``$domainHost``)`n👤 Username: ``$user```n🔑 Password: ``$pass```n⏱️ Max 6 jam dari sekarang`n`nConnect via Remote Desktop (mstsc / Windows App). Jangan bagikan ke siapapun!"
           # Kirim via bot Telegram milik owner panel
           if ($env:TELEGRAM_BOT_TOKEN -and $env:CHAT_ID) {
             $body = @{ chat_id = $env:CHAT_ID; text = $msg; parse_mode = "Markdown" } | ConvertTo-Json
@@ -109,7 +121,7 @@ jobs:
           # Callback ke panel (opsional) biar muncul di RixxPanel
           if ($env:PANEL_URL) {
             try {
-              $cb = @{ chatId = $env:CHAT_ID; host = $hostport; username = $user; passcode = $pass; expiresAt = $expires } | ConvertTo-Json
+              $cb = @{ chatId = $env:CHAT_ID; host = $displayHost; username = $user; passcode = $pass; expiresAt = $expires } | ConvertTo-Json
               Invoke-RestMethod -Method Post -Uri "$env:PANEL_URL/api/rdp/callback" -ContentType "application/json" -Headers @{ "x-callback-secret" = "$env:PANEL_CALLBACK_SECRET" } -Body $cb
             } catch { Write-Host "Callback panel gagal (nggak fatal): $_" }
           }
