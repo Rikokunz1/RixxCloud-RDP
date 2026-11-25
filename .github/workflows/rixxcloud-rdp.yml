@@ -1,0 +1,103 @@
+# RixxCloud Personal RDP (Fork) — jalan HANYA di repo fork milik lo sendiri.
+# ⚠️ GitHub Actions bukan buat disalahgunakan jadi server publik jangka panjang.
+# Pakai di akun/repo lo sendiri, patuhi ToS GitHub, sesi max 6 jam (batas runner).
+name: RixxCloud Personal RDP (Fork)
+
+on:
+  workflow_dispatch:
+    inputs:
+      telegram_chat_id:
+        description: "Chat ID Telegram lo (dari @userinfobot / bot RixxCloud)"
+        required: true
+      username:
+        description: "Username RDP"
+        required: false
+        default: "rixxcloud"
+      panel_url:
+        description: "URL panel RixxCloud lo (opsional, contoh https://xxx.vercel.app)"
+        required: false
+        default: ""
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - name: Setup user, RDP & tunnel, kirim ke Telegram
+        shell: pwsh
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+          PANEL_CALLBACK_SECRET: ${{ secrets.PANEL_CALLBACK_SECRET }}
+          CHAT_ID: ${{ inputs.telegram_chat_id }}
+          RDP_USER_INPUT: ${{ inputs.username }}
+          PANEL_URL: ${{ inputs.panel_url }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $user = "$env:RDP_USER_INPUT"; if ([string]::IsNullOrWhiteSpace($user)) { $user = "rixxcloud" }
+
+          # --- Generate password kuat (random tiap run, di-mask dari log) ---
+          $upper="ABCDEFGHJKLMNPQRSTUVWXYZ"; $lower="abcdefghijkmnpqrstuvwxyz"; $digit="23456789"; $sym="!@#$%"
+          $all = ($upper+$lower+$digit+$sym).ToCharArray()
+          $passChars = @($upper[(Get-Random -Maximum $upper.Length)], $lower[(Get-Random -Maximum $lower.Length)], $digit[(Get-Random -Maximum $digit.Length)], $sym[(Get-Random -Maximum $sym.Length)])
+          1..10 | ForEach-Object { $passChars += $all[(Get-Random -Maximum $all.Length)] }
+          $pass = -join ($passChars | Sort-Object { Get-Random })
+          Write-Output "::add-mask::$pass"
+
+          # --- Buat user admin ---
+          net user $user $pass /add /expires:never
+          net localgroup administrators $user /add
+          net localgroup "Remote Desktop Users" $user /add
+
+          # --- Enable RDP ---
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+
+          # --- Tunnel TCP 3389 ---
+          # Default: bore.pub (gratis, tanpa token/kartu). Kalau secret NGROK_AUTH_TOKEN ada, coba ngrok dulu.
+          $hostport = $null
+          if ($env:NGROK_AUTH_TOKEN) {
+            try {
+              Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
+              Expand-Archive ngrok.zip -DestinationPath . -Force
+              .\ngrok.exe config add-authtoken $env:NGROK_AUTH_TOKEN
+              Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" -RedirectStandardOutput "ngrok.log" -NoNewWindow
+              Start-Sleep -Seconds 12
+              $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels"
+              $hostport = ($tunnels.tunnels[0].public_url -replace "tcp://","")
+              Write-Host "Tunnel (ngrok): $hostport"
+            } catch { Write-Host "ngrok gagal (biasa: ERR_NGROK_8013 belum add card), fallback ke bore.pub..."; $hostport = $null }
+          }
+          if (-not $hostport) {
+            Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-pc-windows-msvc.zip" -OutFile "bore.zip"
+            Expand-Archive bore.zip -DestinationPath . -Force
+            Start-Process -FilePath ".\bore.exe" -ArgumentList "local 3389 --to bore.pub" -RedirectStandardOutput "bore.log" -RedirectStandardError "bore.err.log" -NoNewWindow
+            Start-Sleep -Seconds 8
+            $log = Get-Content "bore.log","bore.err.log" -ErrorAction SilentlyContinue | Out-String
+            if ($log -match "bore\.pub:(\d+)") { $hostport = "bore.pub:$($Matches[1])" }
+            else { throw "Bore tunnel gagal dibuat. Log: $log" }
+            Write-Host "Tunnel (bore): $hostport"
+          }
+
+          $expires = (Get-Date).AddHours(6).ToString("o")
+          $msg = "🚀 *RDP kamu sudah siap!*`n`n🌐 Host: ``$hostport```n👤 Username: ``$user```n🔑 Password: ``$pass```n⏱️ Max 6 jam dari sekarang`n`nConnect via Remote Desktop (mstsc / Windows App). Jangan bagikan ke siapapun!"
+          # Kirim via bot Telegram milik owner panel
+          if ($env:TELEGRAM_BOT_TOKEN -and $env:CHAT_ID) {
+            $body = @{ chat_id = $env:CHAT_ID; text = $msg; parse_mode = "Markdown" } | ConvertTo-Json
+            Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -ContentType "application/json" -Body $body
+            Write-Host "Kredensial terkirim ke Telegram."
+          }
+          # Callback ke panel (opsional) biar muncul di RixxPanel
+          if ($env:PANEL_URL) {
+            try {
+              $cb = @{ chatId = $env:CHAT_ID; host = $hostport; username = $user; passcode = $pass; expiresAt = $expires } | ConvertTo-Json
+              Invoke-RestMethod -Method Post -Uri "$env:PANEL_URL/api/rdp/callback" -ContentType "application/json" -Headers @{ "x-callback-secret" = "$env:PANEL_CALLBACK_SECRET" } -Body $cb
+            } catch { Write-Host "Callback panel gagal (nggak fatal): $_" }
+          }
+
+      - name: Keep alive (max ~6 jam)
+        shell: pwsh
+        run: |
+          $end = (Get-Date).AddMinutes(335)
+          while ((Get-Date) -lt $end) { Write-Host "RDP alive $(Get-Date -Format o)"; Start-Sleep -Seconds 300 }
