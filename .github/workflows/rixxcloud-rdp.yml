@@ -96,8 +96,9 @@ jobs:
             } catch { Write-Host "Callback panel gagal (nggak fatal): $_" }
           }
 
-      - name: Keep alive (max ~6 jam)
-        shell: pwsh
-        run: |
+          # --- Keep alive DALAM STEP YANG SAMA (penting! proses tunnel ikut mati kalau step berganti) ---
+          $rdpReady = $false
+          1..6 | ForEach-Object { if (-not $rdpReady) { $rdpReady = (Test-NetConnection -ComputerName 127.0.0.1 -Port 3389 -WarningAction SilentlyContinue).TcpTestSucceeded; if (-not $rdpReady) { Start-Sleep -Seconds 5 } } }
+          Write-Host "RDP local 3389 ready: $rdpReady | Tunnel: $hostport"
           $end = (Get-Date).AddMinutes(335)
-          while ((Get-Date) -lt $end) { Write-Host "RDP alive $(Get-Date -Format o)"; Start-Sleep -Seconds 300 }
+          while ((Get-Date) -lt $end) { Write-Host "RDP alive $(Get-Date -Format o) host=$hostport"; Start-Sleep -Seconds 300 }
